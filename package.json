@@ -1,0 +1,87 @@
+{
+  "name": "rbac-shield",
+  "version": "0.2.0",
+  "description": "A production-ready, type-safe Role-Based Access Control (RBAC) system for Next.js applications with multi-tenant support",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./ProtectedRoute": {
+      "types": "./dist/ProtectedRoute.d.ts",
+      "import": "./dist/ProtectedRoute.mjs",
+      "require": "./dist/ProtectedRoute.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.mjs",
+      "require": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "rbac-shield": "./bin/cli.js"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:esm": "tsc --module esnext --outDir dist/esm && node scripts/rename-esm.js",
+    "build:cjs": "tsc --module commonjs --outDir dist/cjs && node scripts/copy-cjs.js",
+    "build:types": "tsc -b tsconfig.types.json --force && node scripts/copy-dts.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "rbac-shield",
+    "rbac",
+    "rbac-frontend",
+    "role-based-access-control",
+    "permissions",
+    "permissions-management",
+    "authorization",
+    "nextjs",
+    "react",
+    "typescript",
+    "multi-tenant",
+    "access-control",
+    "route-protection"
+  ],
+  "author": "devnuckles",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "peerDependencies": {
+    "next": ">=13.0.0",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "prompts": "^2.4.2",
+    "chalk": "^4.1.2",
+    "commander": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "packageManager": "npm@10.0.0"
+}

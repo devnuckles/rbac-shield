@@ -1,0 +1,613 @@
+"use client";
+
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+} from "react";
+import { useRouter } from "next/navigation";
+import { RBACState, TenantAuthInput, PermissionString } from "./types";
+import { checkPermission } from "./checkPermission";
+import { match } from "./guards";
+
+interface RBACContextValue<R extends string, A extends string> {
+  state: RBACState<R, A>;
+  setAuth: (authArray: TenantAuthInput[]) => void;
+  switchTenant: (tenantId: string) => void;
+  reset: () => void;
+  debug?: boolean;
+}
+
+// Helper to expand types in tooltips
+type Prettify<T> = {
+  [K in keyof T]: T[K];
+} & {};
+
+export interface CanProps<R extends string, A extends string> {
+  /** Single permission or array of permissions to check */
+  permission: PermissionString<R, A> | PermissionString<R, A>[];
+  children: React.ReactNode;
+  /** Content to render if permission is denied */
+  fallback?: React.ReactNode;
+  /** If true, requires ALL permissions. If false (default), requires ANY. */
+  requireAll?: boolean;
+}
+
+export interface ProtectedRouteProps<R extends string, A extends string> {
+  children: React.ReactNode;
+  /** Single permission or array of permissions to check */
+  permission: PermissionString<R, A> | PermissionString<R, A>[];
+  /** Path to redirect to if access denied (if redirect is true) */
+  fallbackPath?: string;
+  /** Content to render if access denied (or while redirecting) */
+  fallback?: React.ReactNode;
+  /** If true, requires ALL permissions. If false (default), requires ANY. */
+  requireAll?: boolean;
+  /** Custom component to show while loading permissions */
+  loadingComponent?: React.ReactNode;
+  /** Whether to redirect on access denial. Default: true */
+  redirect?: boolean;
+}
+
+export interface RBACProviderProps {
+  children: React.ReactNode;
+  debug?: boolean;
+  initialData?: TenantAuthInput[];
+}
+
+export interface RBACFactory<R extends string, A extends string> {
+  RBACProvider: (props: RBACProviderProps) => React.JSX.Element;
+  /** Access raw state and actions */
+  useRBAC: () => RBACState<R, A> & {
+    setAuth: (authArray: TenantAuthInput[]) => void;
+    switchTenant: (tenantId: string) => void;
+    reset: () => void;
+  };
+  useHasPermission: (permission: PermissionString<R, A>) => boolean;
+  useHasAnyPermission: (permissions: PermissionString<R, A>[]) => boolean;
+  useHasAllPermissions: (permissions: PermissionString<R, A>[]) => boolean;
+  usePermissions: () => PermissionString<R, A>[];
+  /**
+   * Execute logic based on the first matching permission.
+   * Useful for switching APIs or components based on role.
+   */
+  useMatch: <T>(
+    handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
+      default?: () => T;
+    }
+  ) => T | undefined;
+  Can: (props: Prettify<CanProps<R, A>>) => React.JSX.Element;
+  RBACErrorBoundary: typeof React.Component;
+  ProtectedRoute: (
+    props: Prettify<ProtectedRouteProps<R, A>>
+  ) => React.JSX.Element;
+}
+
+export function createRBAC<
+  R extends string = string,
+  A extends string = string
+>(): RBACFactory<R, A> {
+  // Create Context
+  const RBACContext = createContext<RBACContextValue<R, A> | null>(null);
+
+  // Reusable logic to process raw auth inputs into strict state
+  const processTenants = (
+    authArray: TenantAuthInput[]
+  ): Record<
+    string,
+    {
+      permissions: PermissionString<R, A>[];
+      map: Record<string, boolean>;
+    }
+  > => {
+    return authArray.reduce(
+      (acc, curr) => ({
+        ...acc,
+        [curr.tenantId]: {
+          permissions: curr.permissions as PermissionString<R, A>[],
+          map: curr.permissions.reduce(
+            (pMap, p) => ({ ...pMap, [p]: true }),
+            {} as Record<string, boolean>
+          ),
+        },
+      }),
+      {} as Record<
+        string,
+        {
+          permissions: PermissionString<R, A>[];
+          map: Record<string, boolean>;
+        }
+      >
+    );
+  };
+
+  /**
+   * Provider component to wrap your application.
+   * Manages the RBAC state and authentication.
+   */
+  function RBACProvider({
+    children,
+    debug = false,
+    initialData,
+  }: RBACProviderProps) {
+    // Initialize state, optionally hydrating from initialData
+    const [state, setState] = useState<RBACState<R, A>>(() => {
+      if (initialData && initialData.length > 0) {
+        return {
+          activeTenantId: null, // User still needs to switchTenant manually or we could auto-select first? Keep null for safety.
+          tenants: processTenants(initialData),
+          isLoading: false, // Hydrated!
+        };
+      }
+      return {
+        activeTenantId: null,
+        tenants: {},
+        isLoading: true,
+      };
+    });
+
+    // Logger helper
+    const log = useCallback(
+      (msg: string, ...args: any[]) => {
+        if (debug) console.debug(`[RBAC Shield] ${msg}`, ...args);
+      },
+      [debug]
+    );
+
+    const setAuth = useCallback(
+      (authArray: TenantAuthInput[]) => {
+        try {
+          const tenants = processTenants(authArray);
+          setState((prev) => ({ ...prev, tenants, isLoading: false }));
+          log("Permissions loaded for tenants:", Object.keys(tenants));
+        } catch (error) {
+          console.error("[RBAC Shield] Error setting auth:", error);
+          setState((prev) => ({ ...prev, isLoading: false }));
+        }
+      },
+      [log]
+    );
+
+    const switchTenant = useCallback(
+      (tenantId: string) => {
+        setState((prev) => ({ ...prev, activeTenantId: tenantId }));
+        log("Switched to tenant:", tenantId);
+      },
+      [log]
+    );
+
+    const reset = useCallback(() => {
+      setState({
+        activeTenantId: null,
+        tenants: {},
+        isLoading: true,
+      });
+      log("State reset");
+    }, [log]);
+
+    const value = useMemo(
+      () => ({ state, setAuth, switchTenant, reset, debug }),
+      [state, setAuth, switchTenant, reset, debug]
+    );
+
+    return (
+      <RBACContext.Provider value={value}>{children}</RBACContext.Provider>
+    );
+  }
+
+  // Hook to access context
+  function useRBACContext() {
+    const context = useContext(RBACContext);
+    if (!context) {
+      throw new Error("useRBACContext must be used within RBACProvider");
+    }
+    return context;
+  }
+
+  /**
+   * Hook to access the current RBAC store state.
+   * Useful for debugging or custom logic.
+   */
+  function useRBAC() {
+    const { state, setAuth, switchTenant, reset } = useRBACContext();
+    return {
+      ...state,
+      setAuth,
+      switchTenant,
+      reset,
+    };
+  }
+
+  /**
+   * Check if the current user has a specific permission.
+   * @param permission - The permission string to check
+   * @returns boolean
+   */
+  function useHasPermission(permission: PermissionString<R, A>) {
+    const { state, debug } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (!tenant) return false;
+
+      const has = checkPermission(tenant.permissions, permission);
+
+      if (debug && !has) {
+        console.debug(
+          `[RBAC Shield] Denied: Required '${permission}', User has`,
+          tenant.permissions
+        );
+      }
+
+      return has;
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      permission,
+      mounted,
+      state.isLoading,
+      debug,
+    ]);
+  }
+
+  /**
+   * Check if the user has ANY of the provided permissions.
+   * @param permissions - Array of permissions
+   */
+  function useHasAnyPermission(permissions: PermissionString<R, A>[]) {
+    const { state } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (tenant?.map["*"]) return true;
+
+      return permissions.some((p) => !!tenant?.map[p]);
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      permissions,
+      mounted,
+      state.isLoading,
+    ]);
+  }
+
+  /**
+   * Check if the user has ALL of the provided permissions.
+   * @param permissions - Array of permissions
+   */
+  function useHasAllPermissions(permissions: PermissionString<R, A>[]) {
+    const { state } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (tenant?.map["*"]) return true;
+
+      return permissions.every((p) => !!tenant?.map[p]);
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      permissions,
+      mounted,
+      state.isLoading,
+    ]);
+  }
+
+  /**
+   * Get all permissions for the active tenant.
+   */
+  function usePermissions() {
+    const { state } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return [];
+      return state.tenants[state.activeTenantId]?.permissions || [];
+    }, [state.tenants, state.activeTenantId, mounted]);
+  }
+
+  /**
+   * Hook version of match() that uses the current context's permissions.
+   */
+  function useMatch<T>(
+    handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
+      default?: () => T;
+    }
+  ): T | undefined {
+    const { state } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    // We can't memorize the result because "handlers" might change on every render
+    // if passed as an inline object literal (which is common).
+    // However, permissions are stable.
+
+    if (
+      !mounted ||
+      !state.activeTenantId ||
+      !state.tenants[state.activeTenantId]
+    ) {
+      // If we are loading or not authed, try default, else undefined
+      return handlers.default ? handlers.default() : undefined;
+    }
+
+    const currentPermissions =
+      state.tenants[state.activeTenantId].permissions || [];
+
+    return match(currentPermissions, handlers);
+  }
+
+  /**
+   * Component to conditionally render children based on permissions.
+   */
+  function Can({
+    permission,
+    children,
+    fallback = null,
+    requireAll = false,
+  }: CanProps<R, A>) {
+    const { state, debug } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    const hasAccess = useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (!tenant) return false;
+
+      // Admin Override
+      if (tenant.permissions.includes("*")) return true;
+
+      const permsToCheck = Array.isArray(permission)
+        ? permission
+        : [permission];
+
+      let has = false;
+      if (requireAll) {
+        has = permsToCheck.every((p) => checkPermission(tenant.permissions, p));
+      } else {
+        has = permsToCheck.some((p) => checkPermission(tenant.permissions, p));
+      }
+
+      if (debug && !has) {
+        console.debug(
+          `[RBAC Shield] Can Guard Denied: Required ${
+            requireAll ? "ALL" : "ANY"
+          } of`,
+          permsToCheck
+        );
+      }
+
+      return has;
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      state.isLoading,
+      permission,
+      mounted,
+      requireAll,
+      debug,
+    ]);
+
+    return hasAccess ? <>{children}</> : <>{fallback}</>;
+  }
+
+  /**
+   * Error Boundary to catch errors within RBAC components.
+   * Useful for handling rendering errors without crashing the app.
+   */
+  class RBACErrorBoundary extends React.Component<
+    { children: React.ReactNode; fallback?: React.ReactNode },
+    { hasError: boolean }
+  > {
+    constructor(props: any) {
+      super(props);
+      this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(_: Error) {
+      return { hasError: true };
+    }
+
+    componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+      console.error("[RBAC Error Boundary]:", error, errorInfo);
+    }
+
+    render() {
+      if (this.state.hasError) {
+        return (
+          this.props.fallback || (
+            <div>Something went wrong with permissions.</div>
+          )
+        );
+      }
+      return this.props.children;
+    }
+  }
+
+  /**
+   * Component to protect a route or section of the app.
+   * Handles loading states and redirects.
+   */
+  function ProtectedRoute({
+    children,
+    permission,
+    fallbackPath = "/",
+    fallback,
+    requireAll = false,
+    loadingComponent,
+    redirect = true,
+  }: ProtectedRouteProps<R, A>) {
+    const router = useRouter();
+    const { state, debug } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+    const [shouldRedirect, setShouldRedirect] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    const hasAccess = useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (!tenant) return false;
+
+      // Admin Override
+      if (tenant.permissions.includes("*")) return true;
+
+      const permsToCheck = Array.isArray(permission)
+        ? permission
+        : [permission];
+
+      let has = false;
+      if (requireAll) {
+        has = permsToCheck.every((p) => checkPermission(tenant.permissions, p));
+      } else {
+        has = permsToCheck.some((p) => checkPermission(tenant.permissions, p));
+      }
+
+      if (debug && !has) {
+        console.debug(
+          `[RBAC Shield] ProtectedRoute Denied: Required ${
+            requireAll ? "ALL" : "ANY"
+          } of`,
+          permsToCheck
+        );
+      }
+
+      return has;
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      state.isLoading,
+      permission,
+      mounted,
+      requireAll,
+      debug,
+    ]);
+
+    useEffect(() => {
+      if (redirect && mounted && !state.isLoading && !hasAccess) {
+        setShouldRedirect(true);
+        router.replace(fallbackPath);
+      }
+    }, [mounted, state.isLoading, hasAccess, router, fallbackPath, redirect]);
+
+    // Show loading state
+    if (!mounted || state.isLoading) {
+      if (loadingComponent !== undefined) return <>{loadingComponent}</>;
+      return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+          <div className="text-white text-xl animate-pulse">
+            Checking permissions...
+          </div>
+        </div>
+      );
+    }
+
+    // Don't render content if redirecting or no permission
+    if (shouldRedirect || !hasAccess) {
+      if (fallback !== undefined) {
+        return <>{fallback}</>;
+      }
+      return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+          <div className="text-center text-white">
+            <h1 className="text-4xl font-bold mb-4">Access Denied</h1>
+            <p className="text-gray-300 mb-6">
+              You don't have permission to access this page.
+            </p>
+            <p className="text-gray-400 text-sm">
+              {redirect ? "Redirecting..." : ""}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return <>{children}</>;
+  }
+
+  return {
+    RBACProvider,
+    useRBAC,
+    useHasPermission,
+    useHasAnyPermission,
+    useHasAllPermissions,
+    usePermissions,
+    useMatch,
+    Can,
+    RBACErrorBoundary,
+    ProtectedRoute,
+  };
+}
