@@ -15,7 +15,7 @@ import { match } from "./guards";
 
 interface RBACContextValue<R extends string, A extends string> {
   state: RBACState<R, A>;
-  setAuth: (authArray: TenantAuthInput[]) => void;
+  setAuth: (auth: TenantAuthInput[] | string[]) => void;
   switchTenant: (tenantId: string) => void;
   reset: () => void;
   debug?: boolean;
@@ -55,14 +55,14 @@ export interface ProtectedRouteProps<R extends string, A extends string> {
 export interface RBACProviderProps {
   children: React.ReactNode;
   debug?: boolean;
-  initialData?: TenantAuthInput[];
+  initialData?: TenantAuthInput[] | string[];
 }
 
 export interface RBACFactory<R extends string, A extends string> {
   RBACProvider: (props: RBACProviderProps) => React.JSX.Element;
   /** Access raw state and actions */
   useRBAC: () => RBACState<R, A> & {
-    setAuth: (authArray: TenantAuthInput[]) => void;
+    setAuth: (auth: TenantAuthInput[] | string[]) => void;
     switchTenant: (tenantId: string) => void;
     reset: () => void;
   };
@@ -77,25 +77,25 @@ export interface RBACFactory<R extends string, A extends string> {
   useMatch: <T>(
     handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
       default?: () => T;
-    }
+    },
   ) => T | undefined;
   Can: (props: Prettify<CanProps<R, A>>) => React.JSX.Element;
   RBACErrorBoundary: typeof React.Component;
   ProtectedRoute: (
-    props: Prettify<ProtectedRouteProps<R, A>>
+    props: Prettify<ProtectedRouteProps<R, A>>,
   ) => React.JSX.Element;
 }
 
 export function createRBAC<
   R extends string = string,
-  A extends string = string
+  A extends string = string,
 >(): RBACFactory<R, A> {
   // Create Context
   const RBACContext = createContext<RBACContextValue<R, A> | null>(null);
 
   // Reusable logic to process raw auth inputs into strict state
   const processTenants = (
-    authArray: TenantAuthInput[]
+    authInput: TenantAuthInput[] | string[],
   ): Record<
     string,
     {
@@ -103,6 +103,25 @@ export function createRBAC<
       map: Record<string, boolean>;
     }
   > => {
+    let authArray: TenantAuthInput[];
+
+    // Check if input is a simple string array (single tenant mode)
+    if (
+      Array.isArray(authInput) &&
+      (authInput.length === 0 || typeof authInput[0] === "string")
+    ) {
+      // Check first element to be sure, or if empty treat as empty string array
+      if (authInput.length > 0 && typeof authInput[0] !== "string") {
+        authArray = authInput as TenantAuthInput[];
+      } else {
+        authArray = [
+          { tenantId: "default", permissions: authInput as string[] },
+        ];
+      }
+    } else {
+      authArray = authInput as TenantAuthInput[];
+    }
+
     return authArray.reduce(
       (acc, curr) => ({
         ...acc,
@@ -110,7 +129,7 @@ export function createRBAC<
           permissions: curr.permissions as PermissionString<R, A>[],
           map: curr.permissions.reduce(
             (pMap, p) => ({ ...pMap, [p]: true }),
-            {} as Record<string, boolean>
+            {} as Record<string, boolean>,
           ),
         },
       }),
@@ -120,7 +139,7 @@ export function createRBAC<
           permissions: PermissionString<R, A>[];
           map: Record<string, boolean>;
         }
-      >
+      >,
     );
   };
 
@@ -136,9 +155,13 @@ export function createRBAC<
     // Initialize state, optionally hydrating from initialData
     const [state, setState] = useState<RBACState<R, A>>(() => {
       if (initialData && initialData.length > 0) {
+        const tenants = processTenants(initialData);
+        // If "default" tenant exists (from string[] input), auto-select it
+        const autoActiveId = tenants["default"] ? "default" : null;
+
         return {
-          activeTenantId: null, // User still needs to switchTenant manually or we could auto-select first? Keep null for safety.
-          tenants: processTenants(initialData),
+          activeTenantId: autoActiveId,
+          tenants,
           isLoading: false, // Hydrated!
         };
       }
@@ -154,21 +177,34 @@ export function createRBAC<
       (msg: string, ...args: any[]) => {
         if (debug) console.debug(`[RBAC Shield] ${msg}`, ...args);
       },
-      [debug]
+      [debug],
     );
 
     const setAuth = useCallback(
-      (authArray: TenantAuthInput[]) => {
+      (authInput: TenantAuthInput[] | string[]) => {
         try {
-          const tenants = processTenants(authArray);
-          setState((prev) => ({ ...prev, tenants, isLoading: false }));
+          const tenants = processTenants(authInput);
+          // If "default" tenant exists and we are in single-tenant mode (inferred), switch to it
+          const shouldAutoSwitch =
+            !!tenants["default"] && !state.activeTenantId;
+
+          setState((prev) => ({
+            ...prev,
+            tenants,
+            isLoading: false,
+            activeTenantId: shouldAutoSwitch ? "default" : prev.activeTenantId,
+          }));
+
+          if (shouldAutoSwitch) {
+            log("Auto-switched to default tenant");
+          }
           log("Permissions loaded for tenants:", Object.keys(tenants));
         } catch (error) {
           console.error("[RBAC Shield] Error setting auth:", error);
           setState((prev) => ({ ...prev, isLoading: false }));
         }
       },
-      [log]
+      [log],
     );
 
     const switchTenant = useCallback(
@@ -176,7 +212,7 @@ export function createRBAC<
         setState((prev) => ({ ...prev, activeTenantId: tenantId }));
         log("Switched to tenant:", tenantId);
       },
-      [log]
+      [log],
     );
 
     const reset = useCallback(() => {
@@ -190,7 +226,7 @@ export function createRBAC<
 
     const value = useMemo(
       () => ({ state, setAuth, switchTenant, reset, debug }),
-      [state, setAuth, switchTenant, reset, debug]
+      [state, setAuth, switchTenant, reset, debug],
     );
 
     return (
@@ -251,7 +287,7 @@ export function createRBAC<
       if (debug && !has) {
         console.debug(
           `[RBAC Shield] Denied: Required '${permission}', User has`,
-          tenant.permissions
+          tenant.permissions,
         );
       }
 
@@ -362,7 +398,7 @@ export function createRBAC<
   function useMatch<T>(
     handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
       default?: () => T;
-    }
+    },
   ): T | undefined {
     const { state } = useRBACContext();
     const [mounted, setMounted] = useState(false);
@@ -437,7 +473,7 @@ export function createRBAC<
           `[RBAC Shield] Can Guard Denied: Required ${
             requireAll ? "ALL" : "ANY"
           } of`,
-          permsToCheck
+          permsToCheck,
         );
       }
 
@@ -541,7 +577,7 @@ export function createRBAC<
           `[RBAC Shield] ProtectedRoute Denied: Required ${
             requireAll ? "ALL" : "ANY"
           } of`,
-          permsToCheck
+          permsToCheck,
         );
       }
 
