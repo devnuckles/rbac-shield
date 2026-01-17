@@ -61,7 +61,8 @@ export const {
   useRBAC,
   useHasRole,
   useHasPermission,
-  useAccess, // Advanced checks
+  useAccess, // Hook returning check function
+  usePermissionMatch, // Logic switcher
   Can,
   ProtectedRoute,
   guard,
@@ -132,8 +133,10 @@ import { ProtectedRoute, Can, useHasRole, useAccess } from "@/lib/rbac";
 export default function AdminDashboard() {
   const isSuperAdmin = useHasRole("super_admin");
 
-  // Advanced: Check if user is Admin OR has special permission
-  const canManage = useAccess({
+  // Advanced: Get access checker function
+  const hasAccess = useAccess();
+
+  const canManage = hasAccess({
     roles: ["admin"],
     permissions: ["system:manage"],
   });
@@ -214,9 +217,25 @@ Returns `boolean`. Checks if user matches ANY of the roles OR ANY of the permiss
 
 Returns `boolean`. Checks for specific role (or wildcard).
 
-#### `useHasPermission(permission)`
+#### `usePermissionMatch(handlers)`
 
-Returns `boolean`. Checks for specific permission (or wildcard).
+Executes logic based on the### Logic Switching (Dynamic APIs)
+
+Use `usePermissionMatch` to execute different logic based on permissions.
+
+```tsx
+import { usePermissionMatch } from "@/lib/rbac";
+
+export default function Dashboard() {
+  const getData = usePermissionMatch({
+    "admin:view": () => api.getAdminStats(),
+    "manager:view": () => api.getManagerStats(),
+    default: () => api.getUserStats(),
+  });
+
+  return <button onClick={getData}>Refresh Data</button>;
+}
+```
 
 #### `useRBAC()`
 

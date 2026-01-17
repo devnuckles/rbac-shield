@@ -11,7 +11,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import { RBACState, TenantAuthInput, PermissionString } from "./types";
 import { checkPermission } from "./checkPermission";
-import { match } from "./guards";
+import { matchPermission } from "./guards";
 
 interface RBACContextValue<R extends string, A extends string> {
   state: RBACState<R, A>;
@@ -72,7 +72,7 @@ export interface RBACFactory<R extends string, A extends string> {
   };
   useHasRole: (role: string) => boolean;
   useHasPermission: (permission: PermissionString<R, A>) => boolean;
-  useAccess: (requirements: {
+  useAccess: () => (requirements: {
     roles?: string[];
     permissions?: string[];
   }) => boolean;
@@ -83,7 +83,7 @@ export interface RBACFactory<R extends string, A extends string> {
    * Execute logic based on the first matching permission.
    * Useful for switching APIs or components based on role.
    */
-  useMatch: <T>(
+  usePermissionMatch: <T>(
     handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
       default?: () => T;
     },
@@ -461,9 +461,9 @@ export function createRBAC<
   }
 
   /**
-   * Hook version of match() that uses the current context's permissions.
+   * Hook version of matchPermission() that uses the current context's permissions.
    */
-  function useMatch<T>(
+  function usePermissionMatch<T>(
     handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
       default?: () => T;
     },
@@ -491,7 +491,7 @@ export function createRBAC<
     const currentPermissions =
       state.tenants[state.activeTenantId].permissions || [];
 
-    return match(currentPermissions, handlers);
+    return matchPermission(currentPermissions, handlers);
   }
 
   /**
@@ -556,14 +556,14 @@ export function createRBAC<
   };
 
   /**
-   * Check access based on requirements (roles OR permissions).
-   * @param requirements Object with roles and/or permissions arrays
-   * @returns boolean
+   * Hook that returns a function to check access against the current tenant state.
+   * Safe to use in loops, callbacks, and effects.
+   * @returns (requirements) => boolean
    */
-  const useAccess = (requirements: {
+  const useAccess = (): ((requirements: {
     roles?: string[];
     permissions?: string[];
-  }): boolean => {
+  }) => boolean) => {
     const { tenants, activeTenantId, isLoading } = useRBAC();
     const [mounted, setMounted] = useState(false);
 
@@ -571,23 +571,30 @@ export function createRBAC<
       setMounted(true);
     }, []);
 
-    return useMemo(() => {
-      if (
-        !mounted ||
-        isLoading ||
-        !activeTenantId ||
-        !tenants[activeTenantId]
-      ) {
-        // Special case: If checking nothing, and just loading, return false?
-        // Actually, if requirements are empty, we return true (public).
-        if (!requirements.roles?.length && !requirements.permissions?.length)
-          return true;
-        return false;
-      }
+    // Return a stable function that closes over the current state
+    return useCallback(
+      (requirements: { roles?: string[]; permissions?: string[] }) => {
+        if (
+          !mounted ||
+          isLoading ||
+          !activeTenantId ||
+          !tenants[activeTenantId]
+        ) {
+          // If public/empty requirements, allow. Else deny while loading/unauthed.
+          if (
+            !requirements.roles?.length &&
+            !requirements.permissions?.length
+          ) {
+            return true;
+          }
+          return false;
+        }
 
-      const tenant = tenants[activeTenantId];
-      return checkAccess(tenant, requirements);
-    }, [tenants, activeTenantId, isLoading, mounted, requirements]);
+        const tenant = tenants[activeTenantId];
+        return checkAccess(tenant, requirements);
+      },
+      [tenants, activeTenantId, isLoading, mounted],
+    );
   };
 
   /**
@@ -802,7 +809,7 @@ export function createRBAC<
     useHasAnyPermission,
     useHasAllPermissions,
     usePermissions,
-    useMatch,
+    usePermissionMatch, // Updated here
     Can,
     RBACErrorBoundary,
     ProtectedRoute,

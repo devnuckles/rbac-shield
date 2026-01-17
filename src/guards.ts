@@ -42,7 +42,7 @@ export function guard<
  * @param handlers - Object mapping permissions to functions
  * @param defaultHandler - (Optional) Function to run if no permissions match
  */
-export function match<
+export function matchPermission<
   Return,
   R extends string = string,
   A extends string = string
