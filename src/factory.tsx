@@ -72,6 +72,10 @@ export interface RBACFactory<R extends string, A extends string> {
   };
   useHasRole: (role: string) => boolean;
   useHasPermission: (permission: PermissionString<R, A>) => boolean;
+  useAccess: (requirements: {
+    roles?: string[];
+    permissions?: string[];
+  }) => boolean;
   useHasAnyPermission: (permissions: PermissionString<R, A>[]) => boolean;
   useHasAllPermissions: (permissions: PermissionString<R, A>[]) => boolean;
   usePermissions: () => PermissionString<R, A>[];
@@ -301,10 +305,7 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      // Super Admin Override (wildcard in roles)
-      if (tenant.roles.includes("*")) return true;
-
-      const has = tenant.roles.includes(role);
+      const has = checkAccess(tenant, { roles: [role] });
 
       if (debug && !has) {
         console.debug(
@@ -349,7 +350,7 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      const has = checkPermission(tenant.permissions, permission);
+      const has = checkAccess(tenant, { permissions: [permission] });
 
       if (debug && !has) {
         console.debug(
@@ -494,6 +495,102 @@ export function createRBAC<
   }
 
   /**
+   * Check access based on requirements (roles OR permissions).
+   * @param requirements Object with roles and/or permissions arrays
+   * @returns boolean
+   */
+  /**
+   * Internal helper to check access against a specific tenant state.
+   * Centralizes all logic for Roles, Permissions, Wildcards, and AND/OR combinations.
+   */
+  const checkAccess = (
+    tenant: { roles: string[]; permissions: PermissionString<R, A>[] },
+    requirements: { roles?: string[]; permissions?: string[] },
+    requireAll: boolean = false,
+  ): boolean => {
+    // 1. Check Roles
+    let roleMatch = true;
+    if (requirements.roles && requirements.roles.length > 0) {
+      if (tenant.roles.includes("*")) {
+        roleMatch = true;
+      } else {
+        // OR Logic for roles array
+        roleMatch = requirements.roles.some((r) => tenant.roles.includes(r));
+      }
+    }
+
+    // 2. Check Permissions
+    let permMatch = true;
+    if (requirements.permissions && requirements.permissions.length > 0) {
+      // Force cast to check for global wildcard
+      if ((tenant.permissions as string[]).includes("*")) {
+        permMatch = true;
+      } else {
+        if (requireAll) {
+          permMatch = requirements.permissions.every((p) =>
+            checkPermission(tenant.permissions, p as PermissionString<R, A>),
+          );
+        } else {
+          permMatch = requirements.permissions.some((p) =>
+            checkPermission(tenant.permissions, p as PermissionString<R, A>),
+          );
+        }
+      }
+    }
+
+    // 3. Combine Logic
+    // If BOTH are required, treat as AND.
+    // If only one provided, check that one.
+    // If neither, return false (deny safe).
+
+    if (requirements.roles?.length && requirements.permissions?.length) {
+      return roleMatch && permMatch;
+    }
+    if (requirements.roles?.length) return roleMatch;
+    if (requirements.permissions?.length) return permMatch;
+
+    return true; // No requirements = Allow? Or deny?
+    // In strict RBAC, checking "nothing" usually means "is authenticated".
+    // But for "access check" with empty object, we initially returned true.
+    return true;
+  };
+
+  /**
+   * Check access based on requirements (roles OR permissions).
+   * @param requirements Object with roles and/or permissions arrays
+   * @returns boolean
+   */
+  const useAccess = (requirements: {
+    roles?: string[];
+    permissions?: string[];
+  }): boolean => {
+    const { tenants, activeTenantId, isLoading } = useRBAC();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        isLoading ||
+        !activeTenantId ||
+        !tenants[activeTenantId]
+      ) {
+        // Special case: If checking nothing, and just loading, return false?
+        // Actually, if requirements are empty, we return true (public).
+        if (!requirements.roles?.length && !requirements.permissions?.length)
+          return true;
+        return false;
+      }
+
+      const tenant = tenants[activeTenantId];
+      return checkAccess(tenant, requirements);
+    }, [tenants, activeTenantId, isLoading, mounted, requirements]);
+  };
+
+  /**
    * Component to conditionally render children based on permissions.
    */
   function Can({
@@ -522,56 +619,14 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      // 1. Role Check (if role prop provided)
-      let roleMatch = true;
-      if (role) {
-        // Support wildcard in user roles
-        if (tenant.roles.includes("*")) {
-          roleMatch = true;
-        } else {
-          const rolesToCheck = Array.isArray(role) ? role : [role];
-          // ANY of the roles must match
-          roleMatch = rolesToCheck.some((r) => tenant.roles.includes(r));
-        }
-      }
-
-      // 2. Permission Check (if permission prop provided)
-      let permMatch = true;
-      if (permission) {
-        if (tenant.permissions.includes("*")) {
-          permMatch = true;
-        } else {
-          const permsToCheck = Array.isArray(permission)
-            ? permission
-            : [permission];
-          if (requireAll) {
-            permMatch = permsToCheck.every((p) =>
-              checkPermission(tenant.permissions, p),
-            );
-          } else {
-            permMatch = permsToCheck.some((p) =>
-              checkPermission(tenant.permissions, p),
-            );
-          }
-        }
-      }
-
-      // 3. Combined Logic:
-      // - If both provided: Role AND Permission
-      // - If only Role: Role
-      // - If only Permission: Permission
-      // - If neither: False (Deny)
-
-      let has = false;
-      if (role && permission) {
-        has = roleMatch && permMatch;
-      } else if (role) {
-        has = roleMatch;
-      } else if (permission) {
-        has = permMatch;
-      } else {
-        has = false; // Deny if nothing required
-      }
+      // Normalize inputs to arrays
+      const roles = role ? (Array.isArray(role) ? role : [role]) : [];
+      const permissions = permission;
+      const has = checkAccess(
+        tenant,
+        { roles, permissions: permissions as string[] },
+        requireAll,
+      );
 
       if (debug && !has) {
         console.debug(`[RBAC Shield] Can Guard Denied.`, {
@@ -590,7 +645,6 @@ export function createRBAC<
       role,
       mounted,
       requireAll,
-      debug,
     ]);
 
     return hasAccess ? <>{children}</> : <>{fallback}</>;
@@ -664,56 +718,19 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      // 1. Role Check (if role prop provided)
-      let roleMatch = true;
-      if (role) {
-        // Support wildcard in user roles
-        if (tenant.roles.includes("*")) {
-          roleMatch = true;
-        } else {
-          const rolesToCheck = Array.isArray(role) ? role : [role];
-          // ANY of the roles must match
-          roleMatch = rolesToCheck.some((r) => tenant.roles.includes(r));
-        }
-      }
+      // Normalize inputs
+      const roles = role ? (Array.isArray(role) ? role : [role]) : [];
+      const permissions = permission
+        ? Array.isArray(permission)
+          ? permission
+          : [permission]
+        : [];
 
-      // 2. Permission Check (if permission prop provided)
-      let permMatch = true;
-      if (permission) {
-        if (tenant.permissions.includes("*")) {
-          permMatch = true;
-        } else {
-          const permsToCheck = Array.isArray(permission)
-            ? permission
-            : [permission];
-          if (requireAll) {
-            permMatch = permsToCheck.every((p) =>
-              checkPermission(tenant.permissions, p),
-            );
-          } else {
-            permMatch = permsToCheck.some((p) =>
-              checkPermission(tenant.permissions, p),
-            );
-          }
-        }
-      }
-
-      // 3. Combined Logic:
-      // - If both provided: Role AND Permission
-      // - If only Role: Role
-      // - If only Permission: Permission
-      // - If neither: False (Deny)
-
-      let has = false;
-      if (role && permission) {
-        has = roleMatch && permMatch;
-      } else if (role) {
-        has = roleMatch;
-      } else if (permission) {
-        has = permMatch;
-      } else {
-        has = false; // Deny if nothing required
-      }
+      const has = checkAccess(
+        tenant,
+        { roles, permissions: permissions as string[] },
+        requireAll,
+      );
 
       if (debug && !has) {
         console.debug(`[RBAC Shield] ProtectedRoute Denied.`, {
@@ -781,6 +798,7 @@ export function createRBAC<
     useRBAC,
     useHasRole,
     useHasPermission,
+    useAccess,
     useHasAnyPermission,
     useHasAllPermissions,
     usePermissions,

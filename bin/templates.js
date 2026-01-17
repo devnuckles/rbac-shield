@@ -33,7 +33,9 @@ export type Actions = ${actionsType};
 export const { 
   RBACProvider,
   useRBAC, 
-  useHasPermission, 
+  useHasRole,
+  useHasPermission,
+  useAccess,
   useHasAnyPermission,
   useHasAllPermissions,
   usePermissions,
@@ -53,7 +55,9 @@ import { createRBAC } from 'rbac-shield';
 export const { 
   RBACProvider,
   useRBAC,
-  useHasPermission, 
+  useHasRole,
+  useHasPermission,
+  useAccess,
   useHasAnyPermission,
   useHasAllPermissions,
   usePermissions,
