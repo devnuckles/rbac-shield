@@ -66,18 +66,23 @@ function showNextSteps(framework, language, packageManager = 'npm') {
   console.log(chalk.bold('\n📚 Next Steps:\n'));
 
   if (framework === 'Next.js') {
-    console.log(chalk.white('1. Add RBACProvider to your app/layout.' + importExt + ':\n'));
+    console.log(chalk.white('1. Add RBACProvider & PermissionLoader to your app/layout.' + importExt + ':\n'));
     console.log(chalk.gray(`   import { RBACProvider } from '@/lib/rbac';
+   import { PermissionLoader } from '@/components/PermissionLoader';
    
    export default function RootLayout({ children }) {
      return (
        <html>
          <body>
-           <RBACProvider>{children}</RBACProvider>
+           <RBACProvider>
+             <PermissionLoader>
+               {children}
+             </PermissionLoader>
+           </RBACProvider>
          </body>
        </html>
      );
-   }\n`));
+    }\n`));
 
     console.log(chalk.white('2. Initialize permissions (create a component):\n'));
     console.log(chalk.gray(`   'use client';
@@ -89,11 +94,14 @@ function showNextSteps(framework, language, packageManager = 'npm') {
      
      useEffect(() => {
        // Fetch from your API
-       const permissions = [
-         { tenantId: 'user_1', permissions: ['projects:view', 'users:view'] }
-       ];
-       setAuth(permissions);
-       switchTenant('user_1');
+       setAuth([
+         { 
+           tenantId: 'org_1', 
+           roles: ['admin'], 
+           permissions: ['projects:view', 'users:view'] 
+         }
+       ]);
+       switchTenant('org_1');
      }, []);
      
      return <>{children}</>;
@@ -106,7 +114,7 @@ function showNextSteps(framework, language, packageManager = 'npm') {
      const canEdit = useHasPermission('projects:edit');
      
      return (
-       <ProtectedRoute requiredPermission="projects:view">
+       <ProtectedRoute permission="projects:view">
          <h1>Projects</h1>
          <Can permission="projects:delete">
            <button>Delete</button>

@@ -80,14 +80,14 @@ export interface RBACFactory<R extends string, A extends string> {
   useHasAllPermissions: (permissions: PermissionString<R, A>[]) => boolean;
   usePermissions: () => PermissionString<R, A>[];
   /**
-   * Execute logic based on the first matching permission.
-   * Useful for switching APIs or components based on role.
+   * Execute logic based on roles or permissions.
+   * Useful for switching APIs or components dynamically.
    */
-  usePermissionMatch: <T>(
-    handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
-      default?: () => T;
-    },
-  ) => T | undefined;
+  useActionMatch: <T>(handlers: {
+    role?: Partial<Record<string, () => T>>;
+    permission?: Partial<Record<PermissionString<R, A>, () => T>>;
+    default?: () => T;
+  }) => T | undefined;
   Can: (props: Prettify<CanProps<R, A>>) => React.JSX.Element;
   RBACErrorBoundary: typeof React.Component;
   ProtectedRoute: (
@@ -461,13 +461,26 @@ export function createRBAC<
   }
 
   /**
-   * Hook version of matchPermission() that uses the current context's permissions.
+   * Dynamic action matcher - executes logic based on roles OR permissions.
+   * Checks handlers in order: roles first, then permissions, then default.
+   *
+   * @example
+   * const content = useActionMatch({
+   *   role: {
+   *     admin: () => <AdminView />,
+   *     manager: () => <ManagerView />
+   *   },
+   *   permission: {
+   *     "users:view": () => <UserList />
+   *   },
+   *   default: () => <PublicView />
+   * });
    */
-  function usePermissionMatch<T>(
-    handlers: Partial<Record<PermissionString<R, A>, () => T>> & {
-      default?: () => T;
-    },
-  ): T | undefined {
+  function useActionMatch<T>(handlers: {
+    role?: Partial<Record<string, () => T>>;
+    permission?: Partial<Record<PermissionString<R, A>, () => T>>;
+    default?: () => T;
+  }): T | undefined {
     const { state } = useRBACContext();
     const [mounted, setMounted] = useState(false);
 
@@ -475,23 +488,44 @@ export function createRBAC<
       setMounted(true);
     }, []);
 
-    // We can't memorize the result because "handlers" might change on every render
-    // if passed as an inline object literal (which is common).
-    // However, permissions are stable.
-
     if (
       !mounted ||
       !state.activeTenantId ||
       !state.tenants[state.activeTenantId]
     ) {
-      // If we are loading or not authed, try default, else undefined
       return handlers.default ? handlers.default() : undefined;
     }
 
-    const currentPermissions =
-      state.tenants[state.activeTenantId].permissions || [];
+    const tenant = state.tenants[state.activeTenantId];
+    const currentRoles = tenant.roles || [];
+    const currentPermissions = tenant.permissions || [];
 
-    return matchPermission(currentPermissions, handlers);
+    // 1. Check role handlers first
+    if (handlers.role) {
+      // Wildcard check
+      if (currentRoles.includes("*")) {
+        const firstRoleHandler = Object.values(handlers.role)[0];
+        if (firstRoleHandler) return firstRoleHandler();
+      }
+
+      // Exact role match
+      for (const [role, handler] of Object.entries(handlers.role)) {
+        if (currentRoles.includes(role)) {
+          return (handler as () => T)();
+        }
+      }
+    }
+
+    // 2. Check permission handlers
+    if (handlers.permission) {
+      const permResult = matchPermission(currentPermissions, {
+        ...handlers.permission,
+      });
+      if (permResult !== undefined) return permResult;
+    }
+
+    // 3. Fallback to default
+    return handlers.default ? handlers.default() : undefined;
   }
 
   /**
@@ -809,7 +843,7 @@ export function createRBAC<
     useHasAnyPermission,
     useHasAllPermissions,
     usePermissions,
-    usePermissionMatch, // Updated here
+    useActionMatch,
     Can,
     RBACErrorBoundary,
     ProtectedRoute,

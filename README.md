@@ -62,7 +62,7 @@ export const {
   useHasRole,
   useHasPermission,
   useAccess, // Hook returning check function
-  usePermissionMatch, // Logic switcher
+  useActionMatch, // Dynamic role/permission matcher
   Can,
   ProtectedRoute,
   guard,
@@ -92,6 +92,8 @@ export default function RootLayout({ children }) {
 
 Initialize permissions. For async user data, **wait for the user to load** before setting auth.
 
+#### Create the PermissionLoader Component
+
 ```tsx
 // components/PermissionLoader.tsx
 "use client";
@@ -120,6 +122,26 @@ export function PermissionLoader({ children }) {
 
   if (isLoading || !user) return null; // Prevent render until authed
   return <>{children}</>;
+}
+```
+
+#### Wrap Your App
+
+```tsx
+// app/layout.tsx
+import { RBACProvider } from "@/lib/rbac";
+import { PermissionLoader } from "@/components/PermissionLoader";
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body>
+        <RBACProvider>
+          <PermissionLoader>{children}</PermissionLoader>
+        </RBACProvider>
+      </body>
+    </html>
+  );
 }
 ```
 
@@ -213,31 +235,28 @@ Conditionally renders children.
 
 Returns `boolean`. Checks if user matches ANY of the roles OR ANY of the permissions.
 
-#### `useHasRole(role)`
+<h4>`useHasRole(role)`</h4>
 
 Returns `boolean`. Checks for specific role (or wildcard).
 
-#### `usePermissionMatch(handlers)`
+<h4>`useActionMatch(handlers)`</h4>
 
-Executes logic based on the### Logic Switching (Dynamic APIs)
-
-Use `usePermissionMatch` to execute different logic based on permissions.
+Executes logic based on **roles** or **permissions**. Checks role handlers first, then permission handlers, then falls back to default.
 
 ```tsx
-import { usePermissionMatch } from "@/lib/rbac";
-
-export default function Dashboard() {
-  const getData = usePermissionMatch({
-    "admin:view": () => api.getAdminStats(),
-    "manager:view": () => api.getManagerStats(),
-    default: () => api.getUserStats(),
-  });
-
-  return <button onClick={getData}>Refresh Data</button>;
-}
+const content = useActionMatch({
+  role: {
+    admin: () => <AdminDashboard />,
+    manager: () => <ManagerDashboard />,
+  },
+  permission: {
+    "reports:view": () => <ReportsView />,
+  },
+  default: () => <GuestView />,
+});
 ```
 
-#### `useRBAC()`
+<h4>`useRBAC()`</h4>
 
 Access raw state (`isLoading`, `activeTenantId`, etc.) and actions (`setAuth`).
 
