@@ -5,17 +5,20 @@ export type PermissionString<R extends string, A extends string> =
 
 export interface TenantAuth<R extends string, A extends string> {
   tenantId: string;
+  roles: string[];
   permissions: PermissionString<R, A>[];
 }
 
 export interface TenantAuthInput {
   tenantId: string;
+  roles?: string[];
   permissions: string[];
 }
 
 export interface RBACState<R extends string, A extends string> {
   activeTenantId: string | null;
   tenants: Record<string, {
+    roles: string[];
     permissions: PermissionString<R, A>[];
     map: Record<string, boolean>;
   }>;

@@ -5,11 +5,12 @@
 [![Status](https://img.shields.io/badge/Status-Beta-orange.svg)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 
-> [!WARNING] > **Public Beta**: ensuring strict type safety and performance. API is stable but minor breaking changes might occur before v1.0.
+> [!WARNING]
+> **Public Beta**: Ensuring strict type safety and performance. API is stable but minor breaking changes might occur before v1.0.
 
 **The production-ready, type-safe Role-Based Access Control (RBAC) system for Next.js applications.**
 
-Built for modern web development with **React 19**, **TypeScript 5**, and **Next.js App Router** compatibility. RBAC Shield provides a seamless, multi-tenant permission system that just works.
+Built for modern web development with **React 19**, **TypeScript 5**, and **Next.js App Router** compatibility. RBAC Shield provides a seamless, multi-tenant permission system that supports both **Role-based** and **Permission-based** strategies.
 
 ---
 
@@ -19,10 +20,10 @@ Built for modern web development with **React 19**, **TypeScript 5**, and **Next
 - [Quick Setup (CLI)](#-quick-setup-recommended)
 - [Manual Installation](#-manual-installation)
 - [Quick Start](#-quick-start)
+- [Role Management (New)](#-role-management)
 - [Guides & Patterns](#-guides--patterns)
-  - [Roles as Permissions](#roles-as-permissions)
+  - [Roles vs Permissions](#roles-vs-permissions)
   - [Complex Logic (AND/OR)](#complex-logic-andor)
-  - [Customizing UX](#customizing-ux-loading--redirects)
   - [SSR & Hydration](#ssr--hydration-eliminate-loading-states)
   - [Logic Switching (Dynamic APIs)](#logic-switching-dynamic-apis)
   - [Server Action Guards](#server-action-guards)
@@ -35,6 +36,7 @@ Built for modern web development with **React 19**, **TypeScript 5**, and **Next
 ## ✨ Features
 
 - 🎯 **Type-Safe Permissions**: Typescript "Prettify" helpers ensure tooltips show exact prop shapes, amazing IntelliSense.
+- 👑 **First-Class Role Support**: Check for Roles (`admin`), Permissions (`edit:post`), or both simultaneously.
 - 🚀 **High Performance**: Optimized with React Context and memoization. Permission checks are < 1ms.
 - 🏢 **Multi-Tenant Native**: Switch between multiple organizations/roles instantly without page reloads.
 - ⚡ **Zero Loading States**: Support for `initialData` prop allows instant hydration from server-side data.
@@ -100,7 +102,8 @@ export type Actions = "view" | "create" | "edit" | "delete" | "export";
 // 3. Create your instances
 export const {
   RBACProvider,
-  useRBAC, // Renamed from useRBAC (alias available)
+  useRBAC,
+  useHasRole, // New!
   useHasPermission,
   useMatch,
   Can,
@@ -111,7 +114,7 @@ export const {
 
 ### 2. Wrap Your App
 
-Add the provider to your root layout to enable state management.
+Add the provider to your root layout.
 
 ```tsx
 // app/layout.tsx
@@ -134,36 +137,30 @@ export default function RootLayout({
 
 ### 3. Load Permissions
 
-Initialize the system with data from your backend (e.g., after login).
+Initialize the system with data from your backend. You can now pass just permissions (strings) or roles and permissions.
 
 ```tsx
 // components/AuthProvider.tsx
 "use client";
 import { useEffect } from "react";
-import { useRBAC, useMatch } from "@/lib/rbac"; // Use the hook directly
+import { useRBAC } from "@/lib/rbac";
 
-export function AuthProvider({
-  user,
-  children,
-}: {
-  user: any;
-  children: React.ReactNode;
-}) {
-  const { setAuth, switchTenant } = useRBAC();
+export function AuthProvider({ user, children }) {
+  const { setAuth } = useRBAC();
 
   useEffect(() => {
     if (user) {
-      // Load permissions into RBAC Shield
-      setAuth([
-        {
-          tenantId: "team-123",
-          permissions: ["projects:view", "projects:edit"],
-        },
-      ]);
-      // Activate the context
-      switchTenant("team-123");
+      // Option A: Simple Permissions (Auto-assigned to 'default' tenant)
+      setAuth(["projects:view"]);
+
+      // Option B: Roles + Permissions
+      // setAuth([{
+      //    tenantId: "default",
+      //    roles: ["admin"],
+      //    permissions: ["projects:view"]
+      // }]);
     }
-  }, [user, setAuth, switchTenant]);
+  }, [user, setAuth]);
 
   return <>{children}</>;
 }
@@ -171,26 +168,28 @@ export function AuthProvider({
 
 ### 4. Secure Your App
 
-Use the generated hooks and components anywhere.
+Use the components to guard access.
 
 ```tsx
-import { ProtectedRoute, Can, useHasPermission } from "@/lib/rbac";
+import { ProtectedRoute, Can, useHasRole } from "@/lib/rbac";
 
-export default function ProjectSettings() {
-  const canDelete = useHasPermission("projects:delete");
+export default function AdminPanel() {
+  const isAdmin = useHasRole("admin");
 
   return (
-    // 1. Protect Example: Redirects to / if missing permission
-    <ProtectedRoute requiredPermission="projects:edit" fallbackPath="/">
-      <h1>Project Settings</h1>
+    // 1. Role-Based Route Protection
+    <ProtectedRoute role="admin" fallbackPath="/login">
+      <h1>Admin Dashboard</h1>
 
-      {/* 2. Conditional Render Example */}
-      <Can permission="billing:view" fallback={<p>Upgrade to see billing</p>}>
+      {/* 2. Permission Check */}
+      <Can permission="billing:view">
         <BillingWidget />
       </Can>
 
-      {/* 3. Hook Logic Example */}
-      <button disabled={!canDelete}>Delete Project</button>
+      {/* 3. Combined Logic (Role AND Permission) */}
+      <Can role="manager" permission="users:delete">
+        <DeleteUserButton />
+      </Can>
     </ProtectedRoute>
   );
 }
@@ -198,55 +197,55 @@ export default function ProjectSettings() {
 
 ---
 
-## 📖 Guides & Patterns
+## 👑 Role Management
 
-### Roles as Permissions
+RBAC Shield now supports **Dynamic Logic** for access control. You can check for Roles, Permissions, or Both.
 
-Avoid hardcoding role checks like `if (role === 'admin')`. Instead, treat roles as permissions!
-Assign a "identity permission" to your roles, e.g., `role:admin`, `role:manager`.
+### Logic Matrix
+
+| Props Provided      | Logic Applied                                        | Example                                |
+| :------------------ | :--------------------------------------------------- | :------------------------------------- |
+| **Role Only**       | User has `role`                                      | `<Can role="admin">`                   |
+| **Permission Only** | User has `permission`                                | `<Can permission="edit">`              |
+| **Both**            | **STRICT AND**: User has `role` **AND** `permission` | `<Can role="admin" permission="edit">` |
+| **Neither**         | Deny Access                                          | `<Can />` (Renders nothing)            |
+
+### Wildcards
+
+- **Roles**: If the user has the role `*`, they pass ALL role checks.
+- **Permissions**: If the user has permission `*`, they pass ALL permission checks.
+
+### Array Inputs (OR Logic)
+
+If you provide an array to `role` or `permission`, by default it checks if the user has **ANY** of them (OR logic).
 
 ```tsx
-// ❌ Bad: Brittle
-if (user.role === 'admin') <AdminText />
-
-// ✅ Good: Flexible
-// User permissions: ['post:read', 'role:admin']
-<Can permission="role:admin" fallback="Welcome User">
-  Welcome Admin
+// User is EITHER 'admin' OR 'manager'
+<Can role={["admin", "manager"]}>
+  <ManagementPanel />
 </Can>
 ```
 
+---
+
+## 📖 Guides & Patterns
+
+### Roles vs Permissions
+
+- **Roles**: Use for high-level identity or persona checks (e.g., "Is this an Admin?").
+- **Permissions**: Use for granular capability checks (e.g., "Can they delete this post?").
+
+**Best Practice**: Combine them! Use `<ProtectedRoute role="admin">` for the page layout, and `<Can permission="settings:edit">` for specific buttons.
+
 ### Complex Logic (AND/OR)
 
-Sometimes you need a user to have a specific permission **AND** a specific role.
-Use the array format with `requireAll`.
+Use `requireAll` to enforce strict requirements on arrays.
 
 ```tsx
 // User must be 'admin' AND have 'post:delete' permission
 <Can permission={["role:admin", "post:delete"]} requireAll>
   <DeleteEverythingButton />
 </Can>
-```
-
-### Customizing UX (Loading & Redirects)
-
-You have full control over the loading and fallback states. Pass `null` to hide them completely.
-
-```tsx
-// 1. Silent Loading (No Spinner)
-<ProtectedRoute permission="admin:view" loadingComponent={null} >
-  <Dashboard />
-</ProtectedRoute>
-
-// 2. Instant Redirect (No "Access Denied" screen)
-<ProtectedRoute permission="admin:view" fallback={null} fallbackPath="/login" >
-  <Dashboard />
-</ProtectedRoute>
-
-// 3. No Redirect (Show Custom 403 Page)
-<ProtectedRoute permission="admin:view" redirect={false} fallback={<AccessDeniedPage />} >
-  <Dashboard />
-</ProtectedRoute>
 ```
 
 ### SSR & Hydration (Eliminate Loading States)
@@ -256,24 +255,18 @@ Prevent the "flicker" of loading states by passing server-side permissions direc
 ```tsx
 // app/layout.tsx (Server Component)
 import { RBACProvider } from "@/lib/rbac";
-import { getSession } from "@/lib/auth"; // Your auth logic
+import { getSession } from "@/lib/auth";
 
 export default async function RootLayout({ children }) {
   const session = await getSession();
 
-  // Prepare valid initial data matches TenantAuthInput[]
-  const initialData = session
-    ? [
-        {
-          tenantId: session.orgId,
-          permissions: session.permissions, // string[] from DB is fine!
-        },
-      ]
-    : [];
+  // server-side: just pass the string array of permissions!
+  const initialData = session?.permissions || [];
 
   return (
     <html>
       <body>
+        {/* Hydrates instantly! */}
         <RBACProvider initialData={initialData}>{children}</RBACProvider>
       </body>
     </html>
@@ -283,51 +276,19 @@ export default async function RootLayout({ children }) {
 
 ### Logic Switching (Dynamic APIs)
 
-Need to call different APIs or execute different logic based on permissions? You have two options:
-
-#### Option 1: Top-Level Hook (Recommended)
-
-Use this when you want to resolve the handler _during render_ but call it later (e.g., on click).
+Use `useMatch` to execute different logic based on permissions or roles.
 
 ```tsx
-import { useRBAC, useMatch } from "@/lib/rbac";
+import { useMatch } from "@/lib/rbac";
 
 export default function Dashboard() {
-  // 1. Resolve the handler at the top level
-  // Note: We return a FUNCTION () => ... so it doesn't run immediately!
   const getData = useMatch({
-    "admin:view": () => () => api.getAdminStats(),
-    "manager:view": () => () => api.getManagerStats(),
-    default: () => () => api.getUserStats(),
+    "admin:view": () => api.getAdminStats(),
+    "manager:view": () => api.getManagerStats(),
+    default: () => api.getUserStats(),
   });
 
-  const handleRefresh = () => {
-    // 2. Call the resolved function
-    if (getData) getData();
-  };
-
-  return <button onClick={handleRefresh}>Refresh Data</button>;
-}
-```
-
-#### Option 2: Event Handler Utility
-
-Use the `match` utility (not the hook) if you want to keep all logic inside the event handler.
-
-```tsx
-import { usePermissions, match } from "@/lib/rbac";
-
-export default function Dashboard() {
-  const permissions = usePermissions(); // Hooks must be top-level
-
-  const handleRefresh = () => {
-    // 'match' is a plain function, safe to use here!
-    match(permissions, {
-      "admin:view": () => api.getAdminStats(),
-      "manager:view": () => api.getManagerStats(),
-      default: () => api.getUserStats(),
-    });
-  };
+  return <button onClick={getData}>Refresh Data</button>;
 }
 ```
 
@@ -343,17 +304,16 @@ import { getSession } from "@/lib/auth";
 export async function deleteProject(id: string) {
   const session = await getSession();
 
-  // Wrap your delicate logic
   const safeAction = guard(
     session.permissions, // User's permissions
     "project:delete", // Required permission
     async () => {
       await db.project.delete(id);
       return "Deleted!";
-    }
+    },
   );
 
-  return safeAction(); // Throws Error if unauthorized
+  return safeAction();
 }
 ```
 
@@ -363,118 +323,55 @@ export async function deleteProject(id: string) {
 
 ### Components
 
-#### `<RBACProvider>`
-
-Top-level provider component.
-
-- **initialData**: (Optional) `TenantAuthInput[]`. Hydrate state immediately.
-- **debug**: (Optional) `boolean`. Log permission checks to console.
-
 #### `<ProtectedRoute>`
 
 A wrapper component that guards an entire route or section.
 
-- **permission**: Single permission string OR array (`[]`).
-- **requireAll**: `boolean` (Default: `false`).
-- **redirect**: `boolean` (Default: `true`).
-- **fallbackPath**: URL to redirect to if unauthorized.
-- **fallback**: UI to show while redirecting.
-- **loadingComponent**: Custom UI to show during initial check.
+- **permission**: string | string[] (Optional)
+- **role**: string | string[] (Optional)
+- **requireAll**: boolean (Default: `false`)
+- **redirect**: boolean (Default: `true`)
+- **fallbackPath**: string (Default: `/`)
+- **fallback**: ReactNode (UI while redirecting/denied)
 
 #### `<Can>`
 
 Structural component for conditional rendering.
 
-- **permission**: Single string OR array.
-- **requireAll**: `boolean`.
-- **fallback**: UI to show when permission is denied.
+- **permission**: string | string[] (Optional)
+- **role**: string | string[] (Optional)
+- **requireAll**: boolean
+- **fallback**: ReactNode
 
 ### Hooks
 
-#### `useRBAC()`
+#### `useHasRole(role: string)`
 
-Access raw state and actions.
+Returns `boolean`. Checks if user has the specific role (or `*`).
 
-- `setAuth(authData)`: Accepts simple `string[]`.
-- `switchTenant(id)`: Change active context.
-- `isLoading`: `boolean`.
-- `activeTenantId`: `string | null`.
-
-#### `useMatch(handlers)`
-
-Executes logic based on the first matching permission.
-
-- **handlers**: Object `{ [permission]: () => T }`.
-- **default**: Fallback function.
-
-#### `useHasPermission(permission)`
+#### `useHasPermission(permission: string)`
 
 Returns `boolean`. Checks for exact permission match or wildcard `*`.
 
-#### `useHasAnyPermission(permissions[])`
+#### `useRBAC()`
 
-Returns `boolean`. True if user has **at least one** permission.
+Access raw state.
 
-#### `useHasAllPermissions(permissions[])`
-
-Returns `boolean`. True only if user has **every single** permission.
-
-### Utilities
-
-#### `guard(userPerms, requiredPerm, function)`
-
-Higher-order function that wraps and protects a function execution.
-
-#### `checkPermission(userPerms, requiredPerm)`
-
-Universal helper for checking permissions (works on Server/Client/Edge).
+- `setAuth(authData)`: Valid inputs:
+  - `string[]` (Permissions only)
+  - `TenantAuthInput[]` (Full Multi-tenant data)
+- `switchTenant(id)`: Change active context.
 
 ---
 
 ## 🛡️ Security & Best Practices
 
-> [!IMPORTANT] > **Client-side checks are for User Experience (UX) only.**
+> [!IMPORTANT]
+> **Client-side checks are for User Experience (UX) only.**
 
-RBAC Shield controls what the user _sees_ in the browser, but it cannot stop a determined attacker from crafting API requests manually.
-
-### 1. Server-Side Verification (Universal)
-
-Use the universal `checkPermission` helper in Middleware, Server Actions, or API Routes:
-
-```tsx
-import { checkPermission } from "rbac-shield";
-// 1. Middleware Example
-export function middleware(req) {
-  const permissions = getPermissionsFromCookie(req);
-  if (!checkPermission(permissions, "admin:access")) {
-    return NextResponse.redirect(new URL("/403", req.url));
-  }
-}
-```
-
-### 2. Debug Mode
-
-Enable debug mode to see permission logs in the console:
-
-```tsx
-<RBACProvider debug={true}>{children}</RBACProvider>
-```
+Always verify permissions on the server (API Routes, Server Actions, Middleware) using `checkPermission` or `guard`.
 
 ---
-
-## 🐛 Troubleshooting
-
-| Issue                  | Solution                                                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Infinite Loading**   | Ensure `RBACProvider` wraps your app and `setAuth` is called with valid data.                                  |
-| **Type Errors**        | Verify your `Resources` and `Actions` types in `lib/rbac.ts` are exported.                                     |
-| **Hydration Mismatch** | `ProtectedRoute` and `Can` are client components; ensure they are used in client contexts or wrapped properly. |
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! Please open an issue or submit a PR on our [GitHub repository](https://github.com/your-repo/rbac-shield).
 
 ## 📄 License
 

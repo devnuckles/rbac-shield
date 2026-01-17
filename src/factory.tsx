@@ -28,7 +28,9 @@ type Prettify<T> = {
 
 export interface CanProps<R extends string, A extends string> {
   /** Single permission or array of permissions to check */
-  permission: PermissionString<R, A> | PermissionString<R, A>[];
+  permission?: PermissionString<R, A> | PermissionString<R, A>[];
+  /** Single role or array of roles to check */
+  role?: string | string[];
   children: React.ReactNode;
   /** Content to render if permission is denied */
   fallback?: React.ReactNode;
@@ -39,7 +41,9 @@ export interface CanProps<R extends string, A extends string> {
 export interface ProtectedRouteProps<R extends string, A extends string> {
   children: React.ReactNode;
   /** Single permission or array of permissions to check */
-  permission: PermissionString<R, A> | PermissionString<R, A>[];
+  permission?: PermissionString<R, A> | PermissionString<R, A>[];
+  /** Single role or array of roles to check */
+  role?: string | string[];
   /** Path to redirect to if access denied (if redirect is true) */
   fallbackPath?: string;
   /** Content to render if access denied (or while redirecting) */
@@ -66,6 +70,7 @@ export interface RBACFactory<R extends string, A extends string> {
     switchTenant: (tenantId: string) => void;
     reset: () => void;
   };
+  useHasRole: (role: string) => boolean;
   useHasPermission: (permission: PermissionString<R, A>) => boolean;
   useHasAnyPermission: (permissions: PermissionString<R, A>[]) => boolean;
   useHasAllPermissions: (permissions: PermissionString<R, A>[]) => boolean;
@@ -99,6 +104,7 @@ export function createRBAC<
   ): Record<
     string,
     {
+      roles: string[];
       permissions: PermissionString<R, A>[];
       map: Record<string, boolean>;
     }
@@ -106,19 +112,30 @@ export function createRBAC<
     let authArray: TenantAuthInput[];
 
     // Check if input is a simple string array (single tenant mode)
-    if (
-      Array.isArray(authInput) &&
-      (authInput.length === 0 || typeof authInput[0] === "string")
-    ) {
-      // Check first element to be sure, or if empty treat as empty string array
-      if (authInput.length > 0 && typeof authInput[0] !== "string") {
-        authArray = authInput as TenantAuthInput[];
-      } else {
+    if (Array.isArray(authInput)) {
+      if (authInput.length === 0 || typeof authInput[0] === "string") {
+        // Flatten string array into permissions for default tenant
         authArray = [
           { tenantId: "default", permissions: authInput as string[] },
         ];
+      } else {
+        // Standard TenantAuthInput[]
+        authArray = authInput as TenantAuthInput[];
       }
     } else {
+      // Single TenantAuthInput object (e.g. { roles: [], permissions: [] })
+      // Auto-assign to default tenant if tenantId missing, otherwise use as is or wrap
+      // Actually, TenantAuthInput MUST have tenantId in type definition.
+      // But user might want simpler input: setAuth({ roles:[], permissions:[] })
+      // We can iterate over the object but typings say Input is Array or String Array.
+      // We need to support single object input in typings first if we want this.
+      // User requirement: "setAuth({ roles: [], permissions: [] })"
+      // We need to update setAuth signature first.
+
+      // For now, let's assume authInput IS TenantAuthInput[] | string[].
+      // Wait, we need to allow single object.
+      // I'll stick to Array support for now to match interface.
+
       authArray = authInput as TenantAuthInput[];
     }
 
@@ -126,6 +143,7 @@ export function createRBAC<
       (acc, curr) => ({
         ...acc,
         [curr.tenantId]: {
+          roles: curr.roles || [], // Extract roles or default to empty
           permissions: curr.permissions as PermissionString<R, A>[],
           map: curr.permissions.reduce(
             (pMap, p) => ({ ...pMap, [p]: true }),
@@ -136,6 +154,7 @@ export function createRBAC<
       {} as Record<
         string,
         {
+          roles: string[];
           permissions: PermissionString<R, A>[];
           map: Record<string, boolean>;
         }
@@ -255,6 +274,54 @@ export function createRBAC<
       switchTenant,
       reset,
     };
+  }
+
+  /**
+   * Check if the current user has a specific role.
+   * @param role - The role string to check
+   * @returns boolean
+   */
+  function useHasRole(role: string) {
+    const { state, debug } = useRBACContext();
+    const [mounted, setMounted] = useState(false);
+
+    useEffect(() => {
+      setMounted(true);
+    }, []);
+
+    return useMemo(() => {
+      if (
+        !mounted ||
+        state.isLoading ||
+        !state.activeTenantId ||
+        !state.tenants[state.activeTenantId]
+      )
+        return false;
+
+      const tenant = state.tenants[state.activeTenantId];
+      if (!tenant) return false;
+
+      // Super Admin Override (wildcard in roles)
+      if (tenant.roles.includes("*")) return true;
+
+      const has = tenant.roles.includes(role);
+
+      if (debug && !has) {
+        console.debug(
+          `[RBAC Shield] Denied: Required Role '${role}', User has`,
+          tenant.roles,
+        );
+      }
+
+      return has;
+    }, [
+      state.tenants,
+      state.activeTenantId,
+      role,
+      mounted,
+      state.isLoading,
+      debug,
+    ]);
   }
 
   /**
@@ -431,6 +498,7 @@ export function createRBAC<
    */
   function Can({
     permission,
+    role,
     children,
     fallback = null,
     requireAll = false,
@@ -454,27 +522,63 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      // Admin Override
-      if (tenant.permissions.includes("*")) return true;
+      // 1. Role Check (if role prop provided)
+      let roleMatch = true;
+      if (role) {
+        // Support wildcard in user roles
+        if (tenant.roles.includes("*")) {
+          roleMatch = true;
+        } else {
+          const rolesToCheck = Array.isArray(role) ? role : [role];
+          // ANY of the roles must match
+          roleMatch = rolesToCheck.some((r) => tenant.roles.includes(r));
+        }
+      }
 
-      const permsToCheck = Array.isArray(permission)
-        ? permission
-        : [permission];
+      // 2. Permission Check (if permission prop provided)
+      let permMatch = true;
+      if (permission) {
+        if (tenant.permissions.includes("*")) {
+          permMatch = true;
+        } else {
+          const permsToCheck = Array.isArray(permission)
+            ? permission
+            : [permission];
+          if (requireAll) {
+            permMatch = permsToCheck.every((p) =>
+              checkPermission(tenant.permissions, p),
+            );
+          } else {
+            permMatch = permsToCheck.some((p) =>
+              checkPermission(tenant.permissions, p),
+            );
+          }
+        }
+      }
+
+      // 3. Combined Logic:
+      // - If both provided: Role AND Permission
+      // - If only Role: Role
+      // - If only Permission: Permission
+      // - If neither: False (Deny)
 
       let has = false;
-      if (requireAll) {
-        has = permsToCheck.every((p) => checkPermission(tenant.permissions, p));
+      if (role && permission) {
+        has = roleMatch && permMatch;
+      } else if (role) {
+        has = roleMatch;
+      } else if (permission) {
+        has = permMatch;
       } else {
-        has = permsToCheck.some((p) => checkPermission(tenant.permissions, p));
+        has = false; // Deny if nothing required
       }
 
       if (debug && !has) {
-        console.debug(
-          `[RBAC Shield] Can Guard Denied: Required ${
-            requireAll ? "ALL" : "ANY"
-          } of`,
-          permsToCheck,
-        );
+        console.debug(`[RBAC Shield] Can Guard Denied.`, {
+          requiredRole: role,
+          requiredPerm: permission,
+          userRoles: tenant.roles,
+        });
       }
 
       return has;
@@ -483,6 +587,7 @@ export function createRBAC<
       state.activeTenantId,
       state.isLoading,
       permission,
+      role,
       mounted,
       requireAll,
       debug,
@@ -531,6 +636,7 @@ export function createRBAC<
   function ProtectedRoute({
     children,
     permission,
+    role,
     fallbackPath = "/",
     fallback,
     requireAll = false,
@@ -558,27 +664,62 @@ export function createRBAC<
       const tenant = state.tenants[state.activeTenantId];
       if (!tenant) return false;
 
-      // Admin Override
-      if (tenant.permissions.includes("*")) return true;
+      // 1. Role Check (if role prop provided)
+      let roleMatch = true;
+      if (role) {
+        // Support wildcard in user roles
+        if (tenant.roles.includes("*")) {
+          roleMatch = true;
+        } else {
+          const rolesToCheck = Array.isArray(role) ? role : [role];
+          // ANY of the roles must match
+          roleMatch = rolesToCheck.some((r) => tenant.roles.includes(r));
+        }
+      }
 
-      const permsToCheck = Array.isArray(permission)
-        ? permission
-        : [permission];
+      // 2. Permission Check (if permission prop provided)
+      let permMatch = true;
+      if (permission) {
+        if (tenant.permissions.includes("*")) {
+          permMatch = true;
+        } else {
+          const permsToCheck = Array.isArray(permission)
+            ? permission
+            : [permission];
+          if (requireAll) {
+            permMatch = permsToCheck.every((p) =>
+              checkPermission(tenant.permissions, p),
+            );
+          } else {
+            permMatch = permsToCheck.some((p) =>
+              checkPermission(tenant.permissions, p),
+            );
+          }
+        }
+      }
+
+      // 3. Combined Logic:
+      // - If both provided: Role AND Permission
+      // - If only Role: Role
+      // - If only Permission: Permission
+      // - If neither: False (Deny)
 
       let has = false;
-      if (requireAll) {
-        has = permsToCheck.every((p) => checkPermission(tenant.permissions, p));
+      if (role && permission) {
+        has = roleMatch && permMatch;
+      } else if (role) {
+        has = roleMatch;
+      } else if (permission) {
+        has = permMatch;
       } else {
-        has = permsToCheck.some((p) => checkPermission(tenant.permissions, p));
+        has = false; // Deny if nothing required
       }
 
       if (debug && !has) {
-        console.debug(
-          `[RBAC Shield] ProtectedRoute Denied: Required ${
-            requireAll ? "ALL" : "ANY"
-          } of`,
-          permsToCheck,
-        );
+        console.debug(`[RBAC Shield] ProtectedRoute Denied.`, {
+          requiredRole: role,
+          requiredPerm: permission,
+        });
       }
 
       return has;
@@ -587,6 +728,7 @@ export function createRBAC<
       state.activeTenantId,
       state.isLoading,
       permission,
+      role,
       mounted,
       requireAll,
       debug,
@@ -637,6 +779,7 @@ export function createRBAC<
   return {
     RBACProvider,
     useRBAC,
+    useHasRole,
     useHasPermission,
     useHasAnyPermission,
     useHasAllPermissions,

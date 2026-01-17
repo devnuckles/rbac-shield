@@ -1,6 +1,6 @@
 {
   "name": "rbac-shield",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A production-ready, type-safe Role-Based Access Control (RBAC) system for Next.js applications with multi-tenant support",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
